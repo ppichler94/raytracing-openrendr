@@ -3,6 +3,16 @@ layout(local_size_x = 1, local_size_y = 1) in;
 
 uniform vec3[4] cameraParams; // [center, pixel00, deltaU, deltaV]
 uniform writeonly image2D outputImg;
+uniform int numSpheres;
+
+struct Sphere {
+    vec3 position;
+    float radius;
+};
+
+layout(std430, binding=1) buffer spheresBuffer {
+  Sphere spheres[];
+};
 
 struct Ray {
   vec3 pos;
@@ -54,10 +64,13 @@ vec3 Trace(Ray initialRay, inout uint rngState) {
 
     //todo: test code
 
-    HitInfo info = RaySphere(initialRay, vec3(0, 0, -1), 0.5);
-    if (info.didHit) {
-        return vec3(1.0, 0.0, 0.0);
+    for (int i = 0; i < numSpheres; i++) {
+        HitInfo info = RaySphere(initialRay, spheres[i].position, spheres[i].radius);
+        if (info.didHit) {
+            return 0.5 * (vec3(1.0) + info.normal);
+        }
     }
+
 
     // end -------------
 

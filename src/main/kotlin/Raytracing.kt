@@ -11,11 +11,27 @@ class Raytracing : Extension {
     private lateinit var cs: ComputeShader
     private lateinit var outputBuffer: ColorBuffer
     private lateinit var cameraParams: CameraParams
+    private lateinit var spheresBuffer: ShaderStorageBuffer
+    private val spheres = mutableListOf<Sphere>()
 
     override fun setup(program: Program) {
         cs = ComputeShader.fromCode(File("data/cs/raytrace.glsl").readText(), "raytrace")
         outputBuffer = colorBuffer(program.width, program.height)
         cameraParams = initCamera(program.width.toDouble(), program.height.toDouble())
+
+        spheresBuffer = shaderStorageBuffer(shaderStorageFormat {
+            struct("Sphere", "sphere", spheres.size) {
+                primitive("positions", BufferPrimitiveType.VECTOR3_FLOAT32)
+                primitive("radius", BufferPrimitiveType.FLOAT32)
+            }
+        })
+
+        spheresBuffer.put {
+            for (sphere in spheres) {
+                write(sphere.center)
+                write(sphere.radius.toFloat())
+            }
+        }
     }
 
     private fun initCamera(width: Double, height: Double): CameraParams {
@@ -36,11 +52,17 @@ class Raytracing : Extension {
         return CameraParams(cameraCenter, pixel00, pixelU, pixelV)
     }
 
-    override fun beforeDraw(drawer: Drawer, program: Program) {
+    override fun afterDraw(drawer: Drawer, program: Program) {
         cs.uniform("cameraParams", cameraParams.toArray())
+        cs.buffer("spheresBuffer", spheresBuffer)
+        cs.uniform("numSpheres", spheres.size)
         cs.image("outputBuffer", 0,  outputBuffer.imageBinding(0, ImageAccess.WRITE))
         cs.execute(outputBuffer.width, outputBuffer.height, 1)
         drawer.image(outputBuffer)
+    }
+
+    fun sphere(center: Vector3, radius: Double) {
+        spheres.add(Sphere(center, radius))
     }
 }
 
@@ -54,3 +76,5 @@ data class CameraParams(
         return arrayOf(center, pixel00, deltaU, deltaV)
     }
 }
+
+data class Sphere(val center: Vector3, val radius: Double)

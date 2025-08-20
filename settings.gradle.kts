@@ -1,4 +1,4 @@
-rootProject.name = "openrndr-template"
+rootProject.name = "raytracing-openrendr"
 
 pluginManagement {
     repositories {

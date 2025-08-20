@@ -1,0 +1,19 @@
+#version 430
+layout(local_size_x = 1, local_size_y = 1) in;
+
+uniform writeonly image2D outputImg;
+layout(rgba8) uniform readonly image2D oldOutputImg;
+layout(rgba8) uniform readonly image2D inputImage;
+uniform int frameNumber;
+
+void main() {
+    ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+
+    vec4 oldRender = imageLoad(oldOutputImg, coords);
+    vec4 newRender = imageLoad(inputImage, coords);
+
+    float weight = 1.0 / (frameNumber + 1);
+    vec4 accumulatedAverage = oldRender * (1.0 - weight) + newRender * weight;
+
+    imageStore(outputImg, coords, accumulatedAverage);
+}

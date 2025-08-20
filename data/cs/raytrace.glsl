@@ -4,14 +4,32 @@ layout(local_size_x = 1, local_size_y = 1) in;
 uniform vec3[4] cameraParams; // [center, pixel00, deltaU, deltaV]
 uniform writeonly image2D outputImg;
 uniform int numSpheres;
+uniform int NumRaysPerPixel;
+uniform int frameNumber;
+
+struct Material {
+    vec3 color;
+    vec3 emissionColor;
+    float emissionStrength;
+};
 
 struct Sphere {
     vec3 position;
     float radius;
+    Material material;
+};
+
+struct Light {
+  vec3 position;
+  vec3 color;
 };
 
 layout(std430, binding=1) buffer spheresBuffer {
   Sphere spheres[];
+};
+
+layout(std430, binding=2) buffer lightsBuffer {
+    Light lights[];
 };
 
 struct Ray {
@@ -27,7 +45,33 @@ struct HitInfo {
     float distance;
     vec3 hitPoint;
     vec3 normal;
+    Material material;
 };
+
+float RandomValue(inout uint state) {
+    state = state * 747796405 + 2891336453;
+    uint result = ((state >> ((state >> 28) + 4)) ^ state) * 277803737;
+    result = (result >> 22) ^ result;
+    return result / 4294967295.0;
+}
+
+float RandomValueNormalDistribution(inout uint state) {
+    float theta = 2 * 3.1415926 * RandomValue(state);
+    float rho = sqrt(-2 * log(RandomValue(state)));
+    return rho * cos(theta);
+}
+
+vec3 RandomDirection(inout uint state) {
+    float x = RandomValueNormalDistribution(state) * 2 - 1;
+    float y = RandomValueNormalDistribution(state) * 2 - 1;
+    float z = RandomValueNormalDistribution(state) * 2 - 1;
+    return normalize(vec3(x, y, z));
+}
+
+vec3 RandomHemisphereDirection(vec3 normal, inout uint state) {
+    vec3 dir = RandomDirection(state);
+    return dir * sign(dot(normal, dir));
+}
 
 HitInfo RaySphere(Ray ray, vec3 sphereCenter, float sphereRadius) {
     HitInfo hitInfo;
@@ -53,6 +97,23 @@ HitInfo RaySphere(Ray ray, vec3 sphereCenter, float sphereRadius) {
     return hitInfo;
 }
 
+HitInfo CalculateRayCollision(Ray ray) {
+    HitInfo closestHit;
+    closestHit.didHit = false;
+    closestHit.distance = uintBitsToFloat(0x7F800000); //infinity
+
+    for (int i = 0; i < numSpheres; i++) {
+        Sphere sphere = spheres[i];
+        HitInfo info = RaySphere(ray, sphere.position, sphere.radius);
+        if (info.didHit && info.distance < closestHit.distance) {
+            closestHit = info;
+            closestHit.material = sphere.material;
+        }
+    }
+
+    return closestHit;
+}
+
 vec3 Trace(Ray initialRay, inout uint rngState) {
     vec3 totalLight = vec3(0.0);
 
@@ -62,22 +123,23 @@ vec3 Trace(Ray initialRay, inout uint rngState) {
     Ray stack[StackCapacity];
     stack[stackCount++] = initialRay;
 
-    //todo: test code
-
-    for (int i = 0; i < numSpheres; i++) {
-        HitInfo info = RaySphere(initialRay, spheres[i].position, spheres[i].radius);
-        if (info.didHit) {
-            return 0.5 * (vec3(1.0) + info.normal);
-        }
-    }
-
-
-    // end -------------
-
     while (stackCount > 0) {
         Ray ray = stack[--stackCount];
         for (int i = ray.bounceCount; i <= MaxBounceCount; i++) {
+            HitInfo info = CalculateRayCollision(ray);
+            if (info.didHit) {
+                vec3 nextDir = normalize(info.normal + RandomDirection(rngState));
+                ray.pos = info.hitPoint;
+                ray.dir = nextDir;
+                ray.invDir = nextDir * -1.0;
+                ray.bounceCount += 1;
 
+                totalLight += ray.transmittance * info.material.emissionColor * info.material.emissionStrength;
+                ray.transmittance *= info.material.color;
+            }
+            else {
+                break;
+            }
         }
     }
 
@@ -86,6 +148,7 @@ vec3 Trace(Ray initialRay, inout uint rngState) {
 
 void main() {
     ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+    uint pixelIndex = coords.y * gl_NumWorkGroups.x + coords.x;
 
     vec3 cameraCenter = cameraParams[0];
     vec3 pixel00 = cameraParams[1];
@@ -97,8 +160,14 @@ void main() {
 
     Ray ray = Ray(cameraCenter, direction, direction * -1.0, vec3(1), 0);
 
-    uint rngState = 0;
+    uint rngState = pixelIndex + frameNumber * 719393;
 
-    vec3 color = Trace(ray, rngState);
+    vec3 color = vec3(0);
+    for (int rayIndex = 0; rayIndex < NumRaysPerPixel; rayIndex++) {
+        color += Trace(ray, rngState);
+    }
+
+    color /= NumRaysPerPixel;
+
     imageStore(outputImg, coords, vec4(color.xyz, 1.0));
 }

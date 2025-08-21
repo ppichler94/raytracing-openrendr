@@ -1,11 +1,21 @@
 #version 430
 layout(local_size_x = 1, local_size_y = 1) in;
 
-uniform vec3[4] cameraParams; // [center, pixel00, deltaU, deltaV]
 uniform writeonly image2D outputImg;
 uniform int numSpheres;
 uniform int NumRaysPerPixel;
 uniform int frameNumber;
+
+uniform vec3 sensorOrigin;      // so - sensor origin
+uniform vec3 sensorDirection;   // sd - sensor view direction (normal to sensor plane)
+uniform float sensorWidth;     // sw - sensor width
+uniform float sensorHeight;    // sh - sensor height
+uniform float lensDiameter;    // sl - lens diameter
+uniform float focalLength;     // f - focal length in m
+uniform float fStop;           // f-stop number
+uniform float sensorDistance; // SI - distance from lens to sensor
+uniform vec3 sensorU;          // su - orthogonal axis spanning sensor plane
+uniform vec3 sensorV;          // sv - orthogonal axis spanning sensor plane
 
 struct Material {
     vec3 color;
@@ -19,17 +29,8 @@ struct Sphere {
     Material material;
 };
 
-struct Light {
-  vec3 position;
-  vec3 color;
-};
-
 layout(std430, binding=1) buffer spheresBuffer {
   Sphere spheres[];
-};
-
-layout(std430, binding=2) buffer lightsBuffer {
-    Light lights[];
 };
 
 struct Ray {
@@ -131,7 +132,7 @@ vec3 Trace(Ray initialRay, inout uint rngState) {
                 vec3 nextDir = normalize(info.normal + RandomDirection(rngState));
                 ray.pos = info.hitPoint;
                 ray.dir = nextDir;
-                ray.invDir = nextDir * -1.0;
+                ray.invDir = -nextDir;
                 ray.bounceCount += 1;
 
                 totalLight += ray.transmittance * info.material.emissionColor * info.material.emissionStrength;
@@ -146,28 +147,73 @@ vec3 Trace(Ray initialRay, inout uint rngState) {
     return totalLight;
 }
 
+Ray GenerateCameraRay(ivec2 coords, ivec2 subpixel, inout uint rngState) {
+    ivec2 resolution = ivec2(gl_NumWorkGroups.xy);
+
+    // Calculate camera parameters based on lens simulation
+    float SO = focalLength * sensorDistance / (sensorDistance - focalLength);
+    float D = focalLength / fStop;
+    D = D / lensDiameter; // normalized aperture radius [0, 1]
+    D = min(D, 1.0);
+
+    vec3 lensCenter = sensorOrigin + sensorDirection * sensorDistance;
+
+    // Calculate sensor position with subpixel sampling
+    float sx = ((coords.x + 0.5 * (0.5 + subpixel.x)) / resolution.x - 0.5) * sensorWidth;
+    float sy = ((coords.y + 0.5 * (0.5 + subpixel.y)) / resolution.y - 0.5) * sensorHeight;
+    vec3 sensorPos = sensorOrigin + sensorU * sx + sensorV * sy;
+
+    // Ray through center of the lens
+    vec3 lcRayDir = normalize((sensorOrigin + sensorDirection * sensorDistance) - sensorPos);
+
+    // Image plane parallel to sensor
+    vec3 imagePlaneOrigin = sensorOrigin + sensorDirection * SO;
+    vec3 imagePlaneNormal = sensorDirection;
+
+    // Find intersection with image plane
+    float denom = dot(lcRayDir, imagePlaneNormal);
+    float t = dot(imagePlaneOrigin - sensorPos, imagePlaneNormal) / denom;
+
+    if (t < 1e-6) {
+        // Fallback to simple ray if no intersection
+        return Ray(sensorPos, lcRayDir, -lcRayDir, vec3(1), 0);
+    }
+
+    vec3 pointOnImagePlane = sensorPos + lcRayDir * t;
+
+    // Sample lens aperture
+    float phi = RandomValue(rngState) * 2.0 * 3.1415926;
+    float rad = RandomValue(rngState) * D;
+
+    float lx = 0.5 * rad * cos(phi) * lensDiameter;
+    float ly = 0.5 * rad * sin(phi) * lensDiameter;
+
+    vec3 lensPos = lensCenter + sensorU * lx + sensorV * ly;
+    vec3 rayDir = normalize(pointOnImagePlane - lensPos);
+
+    return Ray(lensPos, rayDir, -rayDir, vec3(1), 0);
+}
+
 void main() {
     ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
     uint pixelIndex = coords.y * gl_NumWorkGroups.x + coords.x;
-
-    vec3 cameraCenter = cameraParams[0];
-    vec3 pixel00 = cameraParams[1];
-    vec3 deltaU = cameraParams[2];
-    vec3 deltaV = cameraParams[3];
-
-    vec3 pixelCenter = pixel00 + (coords.x * deltaU) + (coords.y * deltaV);
-    vec3 direction = normalize(pixelCenter - cameraCenter);
-
-    Ray ray = Ray(cameraCenter, direction, direction * -1.0, vec3(1), 0);
-
     uint rngState = pixelIndex + frameNumber * 719393;
 
     vec3 color = vec3(0);
-    for (int rayIndex = 0; rayIndex < NumRaysPerPixel; rayIndex++) {
-        color += Trace(ray, rngState);
+    // 2x2 subpixel sampling
+    for (int ysub = 0; ysub < 2; ysub++) {
+        for (int xsub = 0; xsub < 2; xsub++) {
+            ivec2 subpixel = ivec2(xsub, ysub);
+
+            for (int rayIndex = 0; rayIndex < NumRaysPerPixel; rayIndex++) {
+                Ray ray = GenerateCameraRay(coords, subpixel, rngState);
+                color += Trace(ray, rngState);
+            }
+        }
     }
 
-    color /= NumRaysPerPixel;
+    color /= (NumRaysPerPixel * 4); // Divide by 4 for 2x2 subpixel sampling
 
+    coords.y = int(gl_NumWorkGroups.y) - 1 - coords.y;
     imageStore(outputImg, coords, vec4(color.xyz, 1.0));
 }

@@ -79,13 +79,12 @@ HitInfo RaySphere(Ray ray, vec3 sphereCenter, float sphereRadius) {
     hitInfo.didHit = false;
     vec3 offsetRayOrigin = ray.pos - sphereCenter;
 
-    float a = dot(ray.dir, ray.dir);
     float b = 2.0 * dot(offsetRayOrigin, ray.dir);
     float c = dot(offsetRayOrigin, offsetRayOrigin) - sphereRadius * sphereRadius;
-    float discriminant = b * b - 4.0 * a * c;
+    float discriminant = b * b - 4.0 * c;
 
     if (discriminant >= 0) {
-        float dst = (-b - sqrt(discriminant)) / (2.0 * a);
+        float dst = (-b - sqrt(discriminant)) * 0.5;
 
         if (dst >= 0) {
             hitInfo.didHit = true;
@@ -152,27 +151,20 @@ Ray GenerateCameraRay(ivec2 coords, ivec2 subpixel, inout uint rngState) {
 
     // Calculate camera parameters based on lens simulation
     float SO = focalLength * sensorDistance / (sensorDistance - focalLength);
-    float D = focalLength / fStop;
-    D = D / lensDiameter; // normalized aperture radius [0, 1]
-    D = min(D, 1.0);
+    float D = min(focalLength / (fStop * lensDiameter), 1.0);
 
     vec3 lensCenter = sensorOrigin + sensorDirection * sensorDistance;
 
     // Calculate sensor position with subpixel sampling
-    float sx = ((coords.x + 0.5 * (0.5 + subpixel.x)) / resolution.x - 0.5) * sensorWidth;
-    float sy = ((coords.y + 0.5 * (0.5 + subpixel.y)) / resolution.y - 0.5) * sensorHeight;
-    vec3 sensorPos = sensorOrigin + sensorU * sx + sensorV * sy;
+    vec2 pixelCoord = (vec2(coords) + 0.5 * (0.5 + vec2(subpixel))) / resolution - 0.5;
+    vec3 sensorPos = sensorOrigin + sensorU * (pixelCoord.x * sensorWidth) + sensorV * (pixelCoord.y * sensorHeight);
 
     // Ray through center of the lens
-    vec3 lcRayDir = normalize((sensorOrigin + sensorDirection * sensorDistance) - sensorPos);
+    vec3 lcRayDir = normalize(lensCenter - sensorPos);
 
     // Image plane parallel to sensor
     vec3 imagePlaneOrigin = sensorOrigin + sensorDirection * SO;
-    vec3 imagePlaneNormal = sensorDirection;
-
-    // Find intersection with image plane
-    float denom = dot(lcRayDir, imagePlaneNormal);
-    float t = dot(imagePlaneOrigin - sensorPos, imagePlaneNormal) / denom;
+    float t = dot(imagePlaneOrigin - sensorPos, sensorDirection) / dot(lcRayDir, sensorDirection);
 
     if (t < 1e-6) {
         // Fallback to simple ray if no intersection
@@ -185,10 +177,8 @@ Ray GenerateCameraRay(ivec2 coords, ivec2 subpixel, inout uint rngState) {
     float phi = RandomValue(rngState) * 2.0 * 3.1415926;
     float rad = RandomValue(rngState) * D;
 
-    float lx = 0.5 * rad * cos(phi) * lensDiameter;
-    float ly = 0.5 * rad * sin(phi) * lensDiameter;
-
-    vec3 lensPos = lensCenter + sensorU * lx + sensorV * ly;
+    vec2 lensOffset = rad * 0.5 * lensDiameter * vec2(cos(phi), sin(phi));
+    vec3 lensPos = lensCenter + sensorU * lensOffset.x + sensorV * lensOffset.y;
     vec3 rayDir = normalize(pointOnImagePlane - lensPos);
 
     return Ray(lensPos, rayDir, -rayDir, vec3(1), 0);
